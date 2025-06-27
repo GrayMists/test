@@ -4,3 +4,4 @@ streamlit-option-menu
 openpyxl
 supabase
 plotly.express
+matplotlib
