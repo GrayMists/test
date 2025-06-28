@@ -181,44 +181,52 @@ def display_summary_charts(df):
         st.plotly_chart(treemap_fig_line, use_container_width=True)
 
 
-def display_mp_sales(df):
+def display_mp_sales(df_for_decades, df_for_period_filter):
     """
-    Відображає дані про продажі з вкладками для кожної товарної лінії,
-    з розбивкою по декадах у форматі "дати в рядках".
+    Відображає дані про продажі з вкладками для кожної товарної лінії.
     """
-    st.header("Продажі за товарними лініями (по декадах)")
+    st.header("Продажі за товарними лініями")
 
-    if df.empty:
-        st.info("Немає даних для відображення за обраними фільтрами.")
-        return
-
-    unique_product_lines = sorted(df['product_line'].unique().tolist())
-    if not unique_product_lines:
-        st.info("В обраних даних відсутні товарні лінії.")
-        return
-
-    line_tabs = st.tabs(unique_product_lines)
-
-    for i, line in enumerate(unique_product_lines):
-        with line_tabs[i]:
-            line_df = df[df['product_line'] == line]
-            st.subheader(f"Деталізація продажів для лінії: {line}")
-
-            final_pivot = calculate_and_format_decades(line_df)
-
-            if not final_pivot.empty:
-                st.dataframe(final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
+    with st.expander("Інформація по декадах"):
+        if df_for_decades.empty:
+            st.info("Немає даних для розрахунку по декадах.")
+        else:
+            unique_product_lines = sorted(df_for_decades['product_line'].unique().tolist())
+            if not unique_product_lines:
+                st.info("В обраних даних відсутні товарні лінії.")
             else:
-                st.info(f"Немає продажів для лінії '{line}'.")
+                line_tabs = st.tabs(unique_product_lines)
+                for i, line in enumerate(unique_product_lines):
+                    with line_tabs[i]:
+                        line_df = df_for_decades[df_for_decades['product_line'] == line]
+                        st.subheader(f"Деталізація продажів для лінії: {line}")
+                        final_pivot = calculate_and_format_decades(line_df)
+                        if not final_pivot.empty:
+                            st.dataframe(final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
+                        else:
+                            st.info(f"Немає продажів для лінії '{line}'.")
+
+    st.subheader("Загальні продажі за обраний у фільтрі період")
+    if df_for_period_filter.empty:
+        st.info(
+            "Немає даних для відображення за обраним фільтром періоду. Оберіть 'Весь період' для перегляду всіх даних.")
+    else:
+        agg_pivot = pd.pivot_table(
+            df_for_period_filter,
+            values='quantity',
+            index=df_for_period_filter['source_file_date'].dt.date,
+            columns='product_name',
+            aggfunc='sum'
+        ).fillna(0)
+        st.dataframe(agg_pivot.style.format("{:.1f}").background_gradient(cmap='Greens', axis=1))
 
 
-def display_detailed_view(df):
+def display_detailed_view(df_for_decades):
     """
-    Відображає деталізований перегляд за клієнтами з розбивкою по декадах
-    у форматі "дати в рядках, препарати в колонках" та згруповано за лініями.
+    Відображає деталізований перегляд за клієнтами.
     """
     st.header("Деталізований перегляд за клієнтами")
-    unique_clients_addresses = df[['client', 'delivery_address']].drop_duplicates().sort_values(by='client')
+    unique_clients_addresses = df_for_decades[['client', 'delivery_address']].drop_duplicates().sort_values(by='client')
     if unique_clients_addresses.empty:
         st.info("Немає клієнтів, що відповідають фільтрам.")
         return
@@ -226,29 +234,27 @@ def display_detailed_view(df):
     for _, row in unique_clients_addresses.iterrows():
         client_name, delivery_address = row['client'], row['delivery_address']
         with st.expander(f"**Клієнт:** {client_name}  |  **Адреса:** {delivery_address}"):
-            client_df = df[(df['client'] == client_name) & (df['delivery_address'] == delivery_address)]
-            if client_df.empty:
-                st.info("Немає даних про продажі для цього клієнта/адреси.")
-                continue
+            client_df_decades = df_for_decades[
+                (df_for_decades['client'] == client_name) & (df_for_decades['delivery_address'] == delivery_address)]
 
-            unique_product_lines = sorted(client_df['product_line'].unique().tolist())
-            if not unique_product_lines:
-                st.info("У цього клієнта немає даних по товарних лініях.")
-                continue
-
-            # Створюємо вкладки для кожної товарної лінії
-            line_tabs = st.tabs(unique_product_lines)
-
-            for i, line in enumerate(unique_product_lines):
-                with line_tabs[i]:
-                    line_df = client_df[client_df['product_line'] == line]
-
-                    final_pivot = calculate_and_format_decades(line_df)
-
-                    if not final_pivot.empty:
-                        st.dataframe(final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
-                    else:
-                        st.info(f"Немає даних про продажі для лінії '{line}'.")
+            st.subheader("Інформація по декадах")
+            if client_df_decades.empty:
+                st.info("Немає даних для розрахунку по декадах для цього клієнта.")
+            else:
+                unique_product_lines = sorted(client_df_decades['product_line'].unique().tolist())
+                if not unique_product_lines:
+                    st.info("У цього клієнта немає даних по товарних лініях.")
+                else:
+                    line_tabs = st.tabs(unique_product_lines)
+                    for i, line in enumerate(unique_product_lines):
+                        with line_tabs[i]:
+                            line_df = client_df_decades[client_df_decades['product_line'] == line]
+                            final_pivot = calculate_and_format_decades(line_df)
+                            if not final_pivot.empty:
+                                st.dataframe(
+                                    final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
+                            else:
+                                st.info(f"Немає даних про продажі для лінії '{line}'.")
 
 
 # --- ГОЛОВНА ФУНКЦІЯ ДОДАТКУ ---
@@ -305,10 +311,8 @@ def show_data_sales():
     with tab1:
         display_summary_charts(df_for_general_tabs)
     with tab2:
-        st.info("Примітка: для цього звіту фільтр по конкретній даті ігнорується, щоб показати продажі за всі періоди.")
-        display_mp_sales(df_filtered)
+        display_mp_sales(df_filtered, df_for_general_tabs)
     with tab3:
-        st.info("Примітка: для цього звіту фільтр по конкретній даті ігнорується, щоб показати продажі за всі періоди.")
         display_detailed_view(df_filtered)
     with tab4:
         st.header("Порівняльний аналіз динаміки продажів")
