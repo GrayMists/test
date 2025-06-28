@@ -29,7 +29,6 @@ def analyze_sales_dynamics(raw_df: pd.DataFrame) -> pd.DataFrame:
     df['month'] = df['source_file_date'].dt.strftime('%Y-%m')
     df['period_code'] = df['source_file_date'].dt.day
 
-    # Використовуємо fillna(0) одразу, щоб уникнути проблем з відсутніми даними
     pivot_df = df.pivot_table(
         index=['month', 'territory', 'product_line', 'product_name'],
         columns='period_code',
@@ -39,26 +38,74 @@ def analyze_sales_dynamics(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     clean_sales_df = pd.DataFrame(index=pivot_df.index)
 
-    # "Розумний" розрахунок декад
-    if 10 in pivot_df.columns:
-        clean_sales_df['Декада 1'] = pivot_df[10]
-    else:
-        clean_sales_df['Декада 1'] = 0
+    sales_d10 = pivot_df.get(10, 0)
+    sales_d20 = pivot_df.get(20, 0)
 
-    if 20 in pivot_df.columns and 10 in pivot_df.columns:
-        clean_sales_df['Декада 2'] = pivot_df[20] - pivot_df[10]
-    else:
-        clean_sales_df['Декада 2'] = 0
-
-    if 30 in pivot_df.columns and 20 in pivot_df.columns:
-        clean_sales_df['Декада 3'] = pivot_df[30] - pivot_df[20]
-    else:
-        clean_sales_df['Декада 3'] = 0
+    clean_sales_df['Декада 1'] = sales_d10
+    clean_sales_df['Декада 2'] = sales_d20 - sales_d10
+    clean_sales_df['Декада 3'] = pivot_df.get(30, 0) - sales_d20
 
     clean_sales_df['Місяць Всього'] = clean_sales_df[['Декада 1', 'Декада 2', 'Декада 3']].sum(axis=1)
 
-    # Повертаємо "плаский" DataFrame для надійності
     return clean_sales_df.reset_index()
+
+
+def calculate_and_format_decades(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Бере DataFrame, розраховує "чисті" продажі по декадах та форматує
+    у зведену таблицю з датами в рядках та препаратами в колонках.
+    Коректно обробляє місяці з неповними даними.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df['month'] = df['source_file_date'].dt.strftime('%Y-%m')
+    df['period_code'] = df['source_file_date'].dt.day
+
+    pivot_df = df.pivot_table(
+        index=['month', 'product_name'], columns='period_code',
+        values='quantity', aggfunc='sum'
+    )
+
+    all_data = []
+
+    for month, month_df in pivot_df.groupby(level='month'):
+        has_d10 = 10 in month_df.columns
+        has_d20 = 20 in month_df.columns
+        has_d30 = 30 in month_df.columns
+
+        sales_d10 = month_df.get(10, pd.Series(0, index=month_df.index)).fillna(0)
+        sales_d20 = month_df.get(20, pd.Series(0, index=month_df.index)).fillna(0)
+        sales_d30 = month_df.get(30, pd.Series(0, index=month_df.index)).fillna(0)
+
+        # Спеціальний випадок: є тільки загальна сума за місяць
+        if has_d30 and not has_d20 and not has_d10:
+            for (m, product), quantity in sales_d30.items():
+                if quantity > 0:
+                    all_data.append(
+                        {'Період': f"{month} - Місяць Всього", 'product_name': product, 'quantity': quantity})
+        else:  # Стандартний розрахунок
+            d1 = sales_d10
+            d2 = sales_d20 - sales_d10
+            d3 = sales_d30 - sales_d20
+
+            for (m, product), q1 in d1.items():
+                if q1 > 0: all_data.append({'Період': f"{month} - Декада 1", 'product_name': product, 'quantity': q1})
+            for (m, product), q2 in d2.items():
+                if q2 > 0: all_data.append({'Період': f"{month} - Декада 2", 'product_name': product, 'quantity': q2})
+            for (m, product), q3 in d3.items():
+                if q3 > 0: all_data.append({'Період': f"{month} - Декада 3", 'product_name': product, 'quantity': q3})
+
+    if not all_data:
+        return pd.DataFrame()
+
+    long_format_df = pd.DataFrame(all_data)
+    final_pivot = long_format_df.pivot_table(
+        index='Період', columns='product_name', values='quantity', aggfunc='sum'
+    ).fillna(0)
+
+    return final_pivot.sort_index()
 
 
 def create_waterfall_chart(df, base_month, comp_month):
@@ -136,16 +183,16 @@ def display_summary_charts(df):
 
 def display_mp_sales(df):
     """
-    Відображає дані про продажі з вкладками для кожної товарної лінії.
+    Відображає дані про продажі з вкладками для кожної товарної лінії,
+    з розбивкою по декадах у форматі "дати в рядках".
     """
-    st.header("Продажі за товарними лініями")
+    st.header("Продажі за товарними лініями (по декадах)")
 
     if df.empty:
         st.info("Немає даних для відображення за обраними фільтрами.")
         return
 
     unique_product_lines = sorted(df['product_line'].unique().tolist())
-
     if not unique_product_lines:
         st.info("В обраних даних відсутні товарні лінії.")
         return
@@ -155,26 +202,21 @@ def display_mp_sales(df):
     for i, line in enumerate(unique_product_lines):
         with line_tabs[i]:
             line_df = df[df['product_line'] == line]
-
             st.subheader(f"Деталізація продажів для лінії: {line}")
 
-            pivot_table = pd.pivot_table(
-                line_df,
-                values='quantity',
-                index='product_name',
-                columns=line_df['source_file_date'].dt.date,
-                aggfunc='sum',
-                fill_value=0
-            )
+            final_pivot = calculate_and_format_decades(line_df)
 
-            if not pivot_table.empty:
-                st.dataframe(pivot_table, use_container_width=True)
+            if not final_pivot.empty:
+                st.dataframe(final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
             else:
-                st.info(f"Немає даних про продажі для лінії '{line}'.")
+                st.info(f"Немає продажів для лінії '{line}'.")
 
 
 def display_detailed_view(df):
-    """Відображає деталізований перегляд за клієнтами."""
+    """
+    Відображає деталізований перегляд за клієнтами з розбивкою по декадах
+    у форматі "дати в рядках, препарати в колонках" та згруповано за лініями.
+    """
     st.header("Деталізований перегляд за клієнтами")
     unique_clients_addresses = df[['client', 'delivery_address']].drop_duplicates().sort_values(by='client')
     if unique_clients_addresses.empty:
@@ -189,16 +231,24 @@ def display_detailed_view(df):
                 st.info("Немає даних про продажі для цього клієнта/адреси.")
                 continue
 
-            for product_line in sorted(client_df['product_line'].unique().tolist()):
-                st.markdown(f"##### Лінія продукту: {product_line}")
-                product_line_df = client_df[client_df['product_line'] == product_line]
+            unique_product_lines = sorted(client_df['product_line'].unique().tolist())
+            if not unique_product_lines:
+                st.info("У цього клієнта немає даних по товарних лініях.")
+                continue
 
-                pivot_table = pd.pivot_table(
-                    product_line_df, values='quantity', index=product_line_df['source_file_date'].dt.date,
-                    columns='product_name', aggfunc='sum', fill_value=0
-                )
-                if not pivot_table.empty:
-                    st.dataframe(pivot_table, use_container_width=True)
+            # Створюємо вкладки для кожної товарної лінії
+            line_tabs = st.tabs(unique_product_lines)
+
+            for i, line in enumerate(unique_product_lines):
+                with line_tabs[i]:
+                    line_df = client_df[client_df['product_line'] == line]
+
+                    final_pivot = calculate_and_format_decades(line_df)
+
+                    if not final_pivot.empty:
+                        st.dataframe(final_pivot.style.format("{:.1f}").background_gradient(cmap='Blues', axis=1))
+                    else:
+                        st.info(f"Немає даних про продажі для лінії '{line}'.")
 
 
 # --- ГОЛОВНА ФУНКЦІЯ ДОДАТКУ ---
@@ -233,6 +283,7 @@ def show_data_sales():
     if selected_street != 'Усі вулиці':
         df_filtered = df_filtered[df_filtered['street_normalized'] == selected_street]
 
+    # Створюємо DataFrame для першої вкладки і застосовуємо до нього фільтр по даті
     df_for_general_tabs = df_filtered.copy()
     unique_dates = ['Весь період'] + sorted(df_for_general_tabs['source_file_date'].dt.date.unique().tolist(),
                                             reverse=True)
@@ -254,9 +305,11 @@ def show_data_sales():
     with tab1:
         display_summary_charts(df_for_general_tabs)
     with tab2:
-        display_mp_sales(df_for_general_tabs)
+        st.info("Примітка: для цього звіту фільтр по конкретній даті ігнорується, щоб показати продажі за всі періоди.")
+        display_mp_sales(df_filtered)
     with tab3:
-        display_detailed_view(df_for_general_tabs)
+        st.info("Примітка: для цього звіту фільтр по конкретній даті ігнорується, щоб показати продажі за всі періоди.")
+        display_detailed_view(df_filtered)
     with tab4:
         st.header("Порівняльний аналіз динаміки продажів")
         st.info("Аналіз проводиться у розрізі територій та товарних ліній.")
@@ -326,7 +379,6 @@ def show_data_sales():
                                                          row[f'Підсумок ({base_month})']), axis=1)
                         comparison_table.set_index('product_name', inplace=True)
 
-                        # Вкладки для таблиці та візуалізацій
                         viz_tab1, viz_tab2, viz_tab3 = st.tabs(
                             ["Детальна таблиця", "Аналіз вкладу (Waterfall)", "Матриця зростання (Scatter)"])
 
@@ -337,7 +389,6 @@ def show_data_sales():
                                 f'Декада 2 ({base_month})', f'Декада 2 ({comparison_month})',
                                 f'Декада 3 ({base_month})', f'Декада 3 ({comparison_month})'
                             ]
-                            # Залишаємо лише ті колонки, які реально існують
                             final_cols = [col for col in display_cols_order if col in comparison_table.columns]
                             st.dataframe(
                                 comparison_table[final_cols].sort_values(by='Динаміка').style.format(precision=1,
